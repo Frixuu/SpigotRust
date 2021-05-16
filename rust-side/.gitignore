@@ -1,0 +1,6 @@
+.vscode/
+target/
+*.log
+
+# It's a library, we don't have to freeze the dependencies
+Cargo.lock

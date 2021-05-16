@@ -1,0 +1,6 @@
+name: PluginBridge
+main: xyz.lukasz.pluginbridge.PluginBridge
+version: "0.1"
+author: Frixuu
+description: TODO
+api-version: "1.13"
