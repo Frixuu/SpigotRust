@@ -1,96 +1,115 @@
 package xyz.lukasz.pluginbridge;
 
-import static jdk.incubator.foreign.CLinker.*;
-
-import jdk.incubator.foreign.*;
-
-import java.io.File;
-import java.io.IOException;
-import java.lang.invoke.*;
-
+import jdk.incubator.foreign.CLinker;
+import jdk.incubator.foreign.FunctionDescriptor;
+import jdk.incubator.foreign.LibraryLookup;
+import jdk.incubator.foreign.MemoryAddress;
+import jdk.incubator.foreign.MemorySegment;
 import org.bukkit.plugin.java.JavaPlugin;
 import xyz.lukasz.pluginbridge.util.Streams;
 
+import java.io.File;
+import java.lang.invoke.MethodHandles;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Set;
-import java.util.HashSet;
+import java.util.Map;
+import java.util.function.Function;
 import java.util.stream.Collectors;
+
+import static java.lang.invoke.MethodType.methodType;
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static jdk.incubator.foreign.CLinker.C_INT;
+import static jdk.incubator.foreign.CLinker.C_POINTER;
 
 public class PluginBridge extends JavaPlugin {
 
     private static PluginBridge instance;
 
-    private Set<LibraryLookup> nativeLibraries = new HashSet<>();
-
     @Override
     public void onEnable() {
 
         instance = this;
-        saveDefaultConfig();
+        final var logger = getLogger();
 
-        final var cLinker = CLinker.getInstance();
-        final var pluginDir = new File(
-            getDataFolder().getParentFile().getParentFile(), "plugins-native");
-
+        // Find or create a directory where the native libs will be loaded from
+        final var serverRoot = getDataFolder().getParentFile().getParentFile();
+        final var pluginDir = new File(serverRoot, "plugins-native");
         if (!pluginDir.exists()) {
             pluginDir.mkdir();
         }
 
+        // Find all libraries that we can load
+        Map<Path, LibraryLookup> nativeLibraries;
         try {
             nativeLibraries = Streams
-                .of(Files.newDirectoryStream(pluginDir.toPath(), "*.{dll,so,dylib}"))
-                .map(path -> LibraryLookup.ofPath(path.toAbsolutePath()))
-                .collect(Collectors.toUnmodifiableSet());
-        } catch (IOException e) {
-            e.printStackTrace();
+                .of(Files.newDirectoryStream(
+                    pluginDir.toPath(),
+                    "*.{dll,so,dylib}"))
+                .map(Path::toAbsolutePath)
+                .collect(Collectors.toUnmodifiableMap(
+                    Function.identity(),
+                    LibraryLookup::ofPath));
+        } catch (Exception e) {
+            logger.severe("Could not load native libraries: " + e.getMessage());
+            return;
         }
 
+        final var linker = CLinker.getInstance();
+
         try {
-            final var upcallHandle = MethodHandles.lookup()
-                .findStatic(PluginBridge.class,
-                    "someJavaMethod",
-                    MethodType.methodType(void.class));
-            MemorySegment javaMethodFunc = cLinker.upcallStub(
-                upcallHandle,
+
+            // We can pass Java function pointers to native code
+            final var lookup =  MethodHandles.lookup();
+            final var javaMethodPtr = linker.upcallStub(
+                lookup.findStatic(PluginBridge.class, "someJavaMethod", methodType(void.class)),
                 FunctionDescriptor.ofVoid()
             );
 
-            getLogger().info("Enabling " + nativeLibraries.size() + " native plugins");
-            nativeLibraries.forEach(library -> {
+            logger.info("There are " + nativeLibraries.size() + " native plugins");
+            nativeLibraries.forEach((path, library) -> {
 
-                final var handle = cLinker.downcallHandle(
-                    library.lookup("create_greeting").get(),
-                    MethodType.methodType(int.class,
+                // The native lib must have a function we want to call
+                final var symbol = library.lookup("create_greeting");
+                if (symbol.isEmpty()) {
+                    logger.warning("Symbol not found in " + path.getFileName());
+                    return;
+                }
+
+                // Create a handle to that function
+                final var handle = linker.downcallHandle(
+                    symbol.get(),
+                    methodType(
+                        int.class,
                         MemoryAddress.class,
                         MemoryAddress.class,
                         MemoryAddress.class,
-                        int.class),
+                        int.class
+                    ),
                     FunctionDescriptor.of(C_INT, C_POINTER, C_POINTER, C_POINTER, C_INT)
                 );
 
-                final var input = CLinker.toCString("world").address();
-                final var outputBuffer = MemorySegment.allocateNative(200);
+                // Closing a MemorySegment frees allocated memory associated with this resource
+                try (final var input = CLinker.toCString("world", UTF_8);
+                     final var outputBuffer = MemorySegment.allocateNative(200)) {
 
-                try {
+                    // Call a native function
                     final int bytesWritten = (int) handle.invokeExact(
-                        input,
-                        javaMethodFunc.address(),
+                        input.address(),
+                        javaMethodPtr.address(),
                         outputBuffer.address(),
                         200);
-                    final var greeting = CLinker.toJavaString(outputBuffer);
-                    getLogger().info(greeting);
+
+                    final var greeting = CLinker.toJavaString(outputBuffer, UTF_8);
+                    logger.info(greeting);
+                    logger.info("(BTW, the response was " + bytesWritten + " bytes long.)");
                 } catch (Throwable t) {
-                    getLogger().severe(t.toString());
+                    logger.severe(t.toString());
                     t.printStackTrace();
                 }
-
-                CLinker.freeMemoryRestricted(input);
-                CLinker.freeMemoryRestricted(outputBuffer.address());
             });
 
         } catch (Throwable t) {
-            getLogger().severe(t.getMessage());
+            logger.severe(t.getMessage());
             t.printStackTrace();
         }
     }
