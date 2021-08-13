@@ -1,8 +1,9 @@
 # SpigotRust
 
-A proof of concept combining Spigot Java plugins and Rust.  
-Please note that this project requires exactly Java 16.
-Tested with OpenJDK 16.0.1, x64 Windows, stable Rust & MSVC toolchain.
+A proof of concept for consuming native libraries (specifically: a Rust one) from a Spigot Java plugin.  
+Please note that this project requires **exactly** Java 16. Java 17 removed the ability to lookup a symbol in a specific library. To learn more, see [this Jira issue](https://bugs.openjdk.java.net/browse/JDK-8268130) and [this commit](https://github.com/openjdk/jdk17/commit/59a539fef12dec6ba8af8a41000829402e7e9b72).
+
+_Tested with OpenJDK 16.0.1, x64 Windows, stable Rust & MSVC toolchain._
 
 ## Building & running
 
